@@ -1,0 +1,7 @@
+name = "codegolf-war"
+main = "src/index.js"
+compatibility_date = "2026-11-01"
+
+[vars]
+# Change this to your GitHub "username/repo-name"
+REPO = "YOUR-GITHUB-USERNAME/codegolf-war"
