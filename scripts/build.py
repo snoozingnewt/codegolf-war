@@ -6,6 +6,7 @@ Writes JSON files ({"rows": [...]}) into the output folder (default: out/):
   cells.json       hole, category, lang, status          (today)
   hole_month.json  hole, category, date, ai_lead_pct, human_lead_pct, tied_pct
   lang_month.json  lang, date, ai_held_pct, tied_pct, human_held_pct, holes_solved
+  recent.json      latest record changes: when, hole, lang, golfer, side, kind, bytes, prev_*
   meta.json        updated_at, solutions, ai_accounts
 
 Only the Python standard library is used.
@@ -21,6 +22,8 @@ BASE = "https://code.golf"
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "out")
 START = dt.date(2025, 1, 6)  # first week shown
+RECENT_DAYS = 14             # how far back "recent changes" looks
+RECENT_MAX = 300             # most rows kept in recent.json
 UA = {"User-Agent": "codegolf-war-dashboard (github actions)"}
 
 
@@ -82,7 +85,7 @@ def main():
     hole_info = {h["id"]: (h["name"], h["category"]) for h in holes}
     lang_name = {l["id"]: l["name"] for l in get_json("/api/langs")}
 
-    cells, n = {}, 0
+    cells, events, n = {}, {}, 0
     for e in stream_feed():
         n += 1
         if e.get("scoring") != "bytes" or e["hole"] not in hole_info:
@@ -93,6 +96,7 @@ def main():
             c = cells[key] = (Side(), Side())
         day = dt.date.fromisoformat(e["submitted"][:10]).toordinal()
         (c[0] if e["login"] in ai else c[1]).subs.append((day, e["bytes"]))
+        events.setdefault(key, []).append((e["submitted"][:19], e["bytes"], e["login"]))
     for a, h in cells.values():
         a.finish()
         h.finish()
@@ -154,6 +158,32 @@ def main():
             lang_rows.append({"lang": lang_name.get(lang, lang), "date": w.isoformat(), "ai_held_pct": a,
                               "tied_pct": ti, "human_held_pct": max(0, 100 - a - ti), "holes_solved": t})
 
+    # Most recent record changes: a new shortest solution, a tie of the record, or a first solve.
+    side = lambda login: "AI" if login in ai else "Human"
+    recent = []
+    cutoff = (today - dt.timedelta(days=RECENT_DAYS)).isoformat()
+    for (hole, lang), subs in events.items():
+        subs.sort()
+        best, holder = None, None
+        for ts, b, login in subs:
+            if best is None or b < best:
+                kind = "First solve" if best is None else "New record"
+                prev, prev_holder = best, holder
+                best, holder = b, login
+            elif b == best:
+                kind, prev, prev_holder = "Tied record", best, holder
+            else:
+                continue
+            if ts[:10] >= cutoff:
+                name, cat = hole_info[hole]
+                recent.append({"when": ts + "Z", "hole": name, "lang": lang_name.get(lang, lang), "golfer": login,
+                               "side": side(login), "kind": kind, "bytes": b,
+                               "prev_bytes": prev, "prev_holder": prev_holder,
+                               "prev_side": side(prev_holder) if prev_holder else None,
+                               "change": None if prev is None else b - prev})
+    recent.sort(key=lambda r: r["when"], reverse=True)
+    recent = recent[:RECENT_MAX]
+
     os.makedirs(OUT, exist_ok=True)
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     out = {
@@ -161,6 +191,7 @@ def main():
         "cells": cells_rows,
         "hole_month": hole_rows,
         "lang_month": lang_rows,
+        "recent": recent,
         "meta": [{"updated_at": now, "solutions": n, "ai_accounts": len(ai)}],
     }
     for name, rows in out.items():
